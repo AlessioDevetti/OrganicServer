@@ -1,0 +1,60 @@
+# OrganicServer - shared IPv6-only Docker networks.
+#
+# Declarative source of truth for the networks described in .ai/NETWORK.md:
+#   edge-v6      routed/exposed frontend network, no IPv6 masquerading
+#   internal-v6  isolated backend network, no outbound connectivity
+#
+# Subnets are ULA examples inside fd00::/8 (RFC 4193). Record the real values
+# in .ai/CONTEXT.md after the networks are created on the host.
+#
+# NOTE: edge-v6 uses a ULA example so the template stays self-contained. To
+# expose services without NAT, replace it with a slice of the delegated
+# provider prefix (see .ai/NETWORK.md) before applying.
+#
+# Applying this file creates host-level Docker networks and is Tier 2:
+# validate first with `docker compose -f stacks/_network/compose.yml config`.
+
+name: organic-networks
+
+# Compose drops top-level networks that no service references. This anchor
+# keeps the project model complete without running a workload: replicas is 0,
+# so `up` creates the networks and starts no container.
+services:
+  network-anchor:
+    image: alpine:3
+    command: ["true"]
+    restart: "no"
+    deploy:
+      replicas: 0
+    networks:
+      - edge-v6
+      - internal-v6
+
+networks:
+  edge-v6:
+    name: edge-v6
+    driver: bridge
+    enable_ipv6: true
+    internal: false
+    ipam:
+      driver: default
+      config:
+        - subnet: "fd00:dead:beef:20::/64"
+          gateway: "fd00:dead:beef:20::1"
+    driver_opts:
+      com.docker.network.bridge.name: "br-edge-v6"
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+
+  internal-v6:
+    name: internal-v6
+    driver: bridge
+    enable_ipv6: true
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: "fd00:dead:beef:30::/64"
+          gateway: "fd00:dead:beef:30::1"
+    driver_opts:
+      com.docker.network.bridge.name: "br-internal-v6"
+      com.docker.network.bridge.enable_ip_masquerade: "false"

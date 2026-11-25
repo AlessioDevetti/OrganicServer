@@ -1,0 +1,59 @@
+#!/usr/sbin/nft -f
+# OrganicServer - nftables baseline for Docker IPv6-only workloads.
+#
+# TIER 3: human operator only. The agent must never load or modify this file
+# on the host; it may only read the active ruleset and report.
+#
+# Review and adapt before applying:
+#   nft -c -f config/nftables/organic-docker.nft.example
+#   nft -f  config/nftables/organic-docker.nft.example
+#
+# Docker installs its own NAT/filter chains. This table is an independent
+# baseline; a drop policy on `forward` can interfere with Docker forwarding,
+# so validate compatibility during a maintenance window before rollout.
+
+table inet organic_docker {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        iifname "lo" accept
+        ct state established,related accept
+        ct state invalid drop
+
+        # Essential ICMPv6: Neighbor Discovery, Router Advertisement, PMTUD.
+        # Never drop these types: IPv6 breaks without them.
+        icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert, packet-too-big, destination-unreachable, time-exceeded, parameter-problem } accept
+
+        # Diagnostics: rate-limited echo request.
+        icmpv6 type echo-request limit rate 10/second burst 20 packets accept
+
+        # Management access is host-specific. Add explicit rules only after
+        # confirming the SSH port and source prefix in .ai/CONTEXT.md.
+        # Example (do not enable verbatim):
+        # tcp dport 22 ip6 saddr <MGMT_PREFIX> accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+
+        icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert, packet-too-big, destination-unreachable, time-exceeded, parameter-problem } accept
+        icmpv6 type echo-request limit rate 10/second burst 20 packets accept
+
+        # Egress from the exposed network (DNS64/NAT64 traffic leaves here).
+        # internal-v6 has no route to the outside, so it needs no forward rule.
+        iifname "br-edge-v6" accept
+
+        # Inbound traffic to exposed containers on edge-v6.
+        # Authorize only explicit (container IPv6, port) pairs taken from
+        # .ai/CONTEXT.md; never open a whole subnet or a port range.
+        # Examples (replace placeholders, do not copy verbatim):
+        # ip6 daddr fd00:dead:beef:20::20 tcp dport 443 accept
+        # ip6 daddr fd00:dead:beef:20::21 tcp dport 80 accept
+
+        # Reverse proxy -> backend on internal-v6 follows the edge-v6 egress
+        # rule above; responses are covered by established,related.
+    }
+}

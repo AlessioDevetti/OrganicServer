@@ -75,13 +75,20 @@ Tutte le operazioni sono di sola lettura.
    docker network inspect <rete>
    docker inspect --format '{{json .NetworkSettings.Networks}}' <container>
    ```
-4. Risoluzione e raggiungibilità dall'interno del container:
+4. Verifica che Docker abbia IPv6 attivo e nessun masquerading IPv6:
+   ```bash
+   docker network inspect edge-v6 --format '{{json .EnableIPv6}} {{json .Options}}'
+   docker network inspect internal-v6 --format '{{json .Internal}} {{json .IPAM.Config}}'
+   docker run --rm --network edge-v6 alpine:3 ping -6 -c 3 <IPV6_TARGET>
+   ```
+   Attesi: `EnableIPv6=true`, `com.docker.network.bridge.enable_ip_masquerade=false`, `Internal=false` su `edge-v6` e `Internal=true` su `internal-v6`, subnet coerenti con `.ai/CONTEXT.md` e risposta ICMPv6 dal target. Il template versionato del daemon è `config/docker/daemon.json.example`; la sua applicazione a `/etc/docker/daemon.json` è Tier 3 e spetta all'operatore.
+5. Risoluzione e raggiungibilità dall'interno del container:
    ```bash
    docker exec <container> getent hosts <hostname>
    docker exec <container> ping -6 -c 3 <hostname>
    ```
-5. Regole firewall in sola lettura: `nft list ruleset`. Non modificare, ricaricare o svuotare le regole.
-6. Ricordare che ICMPv6 (Neighbor Discovery, Router Advertisement, Packet Too Big) è obbligatorio: non proporre il blocco totale di ICMP.
+6. Regole firewall in sola lettura: `nft list ruleset`. Non modificare, ricaricare o svuotare le regole. Il baseline di riferimento è `config/nftables/organic-docker.nft.example` (Tier 3, solo operatore).
+7. Ricordare che ICMPv6 (Neighbor Discovery, Router Advertisement, Packet Too Big) è obbligatorio: non proporre il blocco totale di ICMP.
 
 **Blocco:** qualsiasi intervento su `nftables`, interfacce o `systemd-networkd` è Tier 3 e richiede approvazione umana.
 
