@@ -26,7 +26,8 @@ OrganicServer/
 │   ├── RUNBOOK.md       # Procedure operative standard
 │   ├── QUEUE.md         # Coda dei task approvati dall'operatore
 │   ├── REPORT.md        # Log cronologico delle esecuzioni
-│   └── NETWORK.md       # Linee guida di rete e connettività
+│   ├── NETWORK.md       # Linee guida di rete e connettività
+│   └── prompts/         # Playbook operativi selezionati dall'intento (deploy, update, troubleshoot, audit)
 ├── stacks/              # Docker Compose stack dichiarativi (una directory per stack)
 ├── manifests/           # Asset dichiarativi già presenti (compose, unit systemd)
 ├── scripts/             # Script idempotenti di audit, raccolta stato e backup
@@ -47,8 +48,22 @@ La connettività dei servizi esposti è nativa IPv6. Il piano di management va c
 
 In caso di fallimento: massimo 2 tentativi, poi stop, log dell'errore esatto in `.ai/REPORT.md` e segnalazione per revisione umana.
 
+## Utilizzo rapido con Agente AI
+
+`AGENTS.md` contiene un *Router Operativo*: l'agente riconosce l'intento della richiesta, legge il playbook corrispondente in `.ai/prompts/` e lo esegue nel rispetto dei Tier 1-3. Non serve conoscere i comandi: basta descrivere l'obiettivo.
+
+Esempi di richieste brevi:
+
+- **Installare un nuovo servizio** — *"Installa Nginx Proxy Manager"* → `.ai/prompts/deploy-stack.md` (template, immagine pinnata, IPv6 statico, hardening, preflight, verifica).
+- **Aggiornare o modificare uno stack** — *"Aggiorna lo stack vaultwarden"* oppure *"Cambia la porta interna di immich"* → `.ai/prompts/update-maintain.md` (pull, `up -d --remove-orphans`, healthcheck, rollback).
+- **Diagnosticare un problema** — *"Il container immich è unhealthy"* o *"Non si raggiunge il servizio in IPv6"* → `.ai/prompts/troubleshoot.md` (diagnostica read-only, causa radice, report).
+- **Verificare la sicurezza** — *"Fai un audit di sicurezza"* o *"Ci sono porte IPv4 esposte?"* → `.ai/prompts/security-audit.md` (hardening, segreti, coerenza di stato).
+
+Se la richiesta è ambigua (rete `edge-v6` vs `internal-v6`, variabili d'ambiente o versione immagine mancanti), l'agente chiede conferma prima di procedere.
+
 ## Riferimenti
 
-- `AGENTS.md` — regole operative e tier di permesso.
+- `AGENTS.md` — regole operative, router dei playbook e tier di permesso.
+- `.ai/prompts/` — playbook operativi per deploy, aggiornamento, troubleshooting e audit.
 - `.ai/NETWORK.md` — disciplina di rete, binding delle porte e verifiche di connettività.
 - `.ai/RUNBOOK.md` — procedure operative passo-passo.

@@ -5,6 +5,26 @@ You do **NOT** run as a continuous background loop. Every invocation is a single
 
 The target architecture is **Docker-first** and **IPv6-only** for every application service. The host and its containers must not expose a public IPv4 stack; IPv4-only legacy endpoints are reached through DNS64/NAT64 at the network gateway. See sections 5–7 and `.ai/NETWORK.md`.
 
+## Router Operativo (Auto-selezione Playbook)
+
+Quando ricevi una richiesta operativa breve dall'utente, identifica l'intento dalla tabella seguente, leggi obbligatoriamente il file `.ai/prompts/<file>.md` corrispondente **PRIMA** di eseguire qualsiasi azione, e segui ogni suo step insieme ai vincoli Tier 1-3 definiti in questo documento.
+
+| Intento della richiesta | Trigger tipici | Playbook obbligatorio |
+| :--- | :--- | :--- |
+| Nuovo servizio / Installazione / Deploy | "installa nginx proxy manager", "crea uno stack per X", "deploya Y" | `.ai/prompts/deploy-stack.md` |
+| Aggiornamento / Modifica / Restart stack | "aggiorna lo stack X", "cambia la porta di Y", "riavvia Z" | `.ai/prompts/update-maintain.md` |
+| Debug / Errore / Log / Connettività IPv6 | "X non risponde", "container unhealthy", "errore di rete IPv6", "guarda i log" | `.ai/prompts/troubleshoot.md` |
+| Audit sicurezza / Controllo porte / Verifica repo | "fai un audit di sicurezza", "ci sono porte IPv4 esposte?", "verifica la repo" | `.ai/prompts/security-audit.md` |
+
+Regole di routing:
+
+1. Se l'intento è chiaro, leggi il playbook corrispondente e applicalo senza chiedere conferma sull'instradamento.
+2. Se la richiesta copre più intenti, esegui i playbook in ordine: `security-audit` → `troubleshoot` → `update-maintain` → `deploy-stack`, leggendoli tutti prima di agire.
+3. Se nessun intento è riconoscibile o la richiesta è fuori perimetro, non improvvisare: chiedi chiarimento all'utente.
+4. Il playbook non sostituisce questo documento: in caso di conflitto prevalgono sempre i Tier 1-3, il Circuit Breaker e i vincoli IPv6-only.
+
+**Chiarimento preventivo:** se la richiesta è ambigua (ad esempio non specifica se il servizio deve essere esposto su `edge-v6` o restare isolato su `internal-v6`, oppure richiede variabili d'ambiente obbligatorie non note), l'agente deve chiedere conferma all'utente prima di avviare il deploy. Lo stesso vale per versioni immagine non specificate, porte in conflitto e migrazioni dati.
+
 ## 1. Execution Model & Hard Boundaries
 
 - **Single-Pass Execution:** Complete your assigned checklist or scheduled run, write the state/report updates, commit to Git, and **exit immediately**. Never enter an open-ended polling or retry loop.
