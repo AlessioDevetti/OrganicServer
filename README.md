@@ -1,6 +1,6 @@
 # OrganicServer
 
-**OrganicServer** è un harness operativo basato su Git per la gestione **dichiarativa e agentica** di un server **Debian** orientato a container Docker e a connettività nativa IPv6.
+**OrganicServer** è un harness operativo basato su Git per la gestione **dichiarativa e agentica** di un server **Debian** orientato a container Docker e a connettività dual-stack (IPv4 + IPv6).
 
 Il repository viene clonato su `/opt/organic-server` e fornisce a un agente AI (OpenCode, Claude Code o agenti LLM locali) le regole, il contesto architetturale e i guardrail necessari per inizializzare, configurare e mantenere il sistema nel tempo. Ogni modifica è ispezionata, applicata in modo dichiarativo quando possibile e tracciata con commit atomici; le operazioni critiche restano in carico all'operatore umano.
 
@@ -36,7 +36,7 @@ OrganicServer/
 
 `stacks/` è la destinazione prevista per i nuovi stack Compose; gli asset già presenti restano in `manifests/` finché non vengono migrati con un task dedicato in `.ai/QUEUE.md`.
 
-La connettività dei servizi esposti è nativa IPv6. Il piano di management va comunque verificato su entrambe le famiglie di protocollo, secondo la disciplina descritta in `.ai/NETWORK.md`.
+La connettività dei servizi esposti è dual-stack (IPv4 + IPv6). Il piano di management va verificato su entrambe le famiglie di protocollo, secondo la disciplina descritta in `.ai/NETWORK.md`.
 
 ## Flusso operativo standard
 
@@ -54,12 +54,12 @@ In caso di fallimento: massimo 2 tentativi, poi stop, log dell'errore esatto in 
 
 Esempi di richieste brevi:
 
-- **Installare un nuovo servizio** — *"Installa Nginx Proxy Manager"* → `.ai/prompts/deploy-stack.md` (template, immagine pinnata, IPv6 statico, hardening, preflight, verifica).
+- **Installare un nuovo servizio** — *"Installa Nginx Proxy Manager"* → `.ai/prompts/deploy-stack.md` (template, immagine pinnata, indirizzi statici, hardening, preflight, verifica).
 - **Aggiornare o modificare uno stack** — *"Aggiorna lo stack vaultwarden"* oppure *"Cambia la porta interna di immich"* → `.ai/prompts/update-maintain.md` (pull, `up -d --remove-orphans`, healthcheck, rollback).
 - **Diagnosticare un problema** — *"Il container immich è unhealthy"* o *"Non si raggiunge il servizio in IPv6"* → `.ai/prompts/troubleshoot.md` (diagnostica read-only, causa radice, report).
 - **Verificare la sicurezza** — *"Fai un audit di sicurezza"* o *"Ci sono porte IPv4 esposte?"* → `.ai/prompts/security-audit.md` (hardening, segreti, coerenza di stato).
 
-Se la richiesta è ambigua (rete `edge-v6` vs `internal-v6`, variabili d'ambiente o versione immagine mancanti), l'agente chiede conferma prima di procedere.
+Se la richiesta è ambigua (rete `edge` vs `internal`, variabili d'ambiente o versione immagine mancanti), l'agente chiede conferma prima di procedere.
 
 ## Riferimenti
 

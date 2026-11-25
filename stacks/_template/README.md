@@ -1,4 +1,4 @@
-# `stacks/_template` — blueprint hardened IPv6-only
+# `stacks/_template` — blueprint hardened dual-stack (IPv4 + IPv6)
 
 Questa directory è il modello obbligatorio per ogni nuovo stack in `stacks/`.
 Non va deployata così com'è: serve a copiare la struttura e l'hardening di
@@ -24,21 +24,23 @@ Poi rinominare la directory e modificare `stacks/<servizio>/compose.yml`.
 | `command:` | Sostituire il comando placeholder con quello del servizio reale. |
 | `user:` | Mantenere un UID/GID non-root esplicito. Se i volumi sono posseduti da un altro utente, usare quel `PUID:PGID` e documentarlo. |
 | `env_file.path` | Puntare a `/etc/organic-server/secrets/<servizio>.env`. Il file reale resta fuori dal repository (permessi `0600`, directory `0700`). |
-| `networks` + `ipv6_address` | Scegliere **una** rete pertinente e un host ID deterministico secondo `.ai/NETWORK.md`: backend/database su `internal-v6` da `::10`; reverse proxy/edge su `edge-v6` da `::20`. Registrare la tupla in `.ai/CONTEXT.md`. |
+| `networks` + `ipv4_address`/`ipv6_address` | Scegliere **una** rete pertinente e host ID deterministici secondo `.ai/NETWORK.md`: backend/database su `internal` da `.10`/`::10`; reverse proxy/edge su `edge` da `.20`/`::20`. Registrare la tupla in `.ai/CONTEXT.md`. |
 | `expose:` | Dichiarare solo le porte interne realmente usate dal servizio. |
-| `healthcheck:` | Sostituire l'endpoint placeholder con un probe reale, eseguito su IPv6 (`[::1]` o l'indirizzo del servizio). Deve fallire quando il servizio non è pronto. |
+| `healthcheck:` | Sostituire l'endpoint placeholder con un probe reale. Deve fallire quando il servizio non è pronto. |
 | `restart:` | Lasciare `unless-stopped` salvo motivazione esplicita documentata. |
 | `tmpfs` | Aggiungere altri path scrivibili solo se necessari, sempre con `noexec,nosuid` e una dimensione limitata. |
 
 ### Rete e pubblicazione porte
 
-- I servizi backend restano solo su `internal-v6` e non pubblicano porte
-  sull'host: si raggiungono tramite l'indirizzo IPv6 statico.
-- Solo il reverse proxy può stare su `edge-v6` e pubblicare porte, con binding
-  IPv6 esplicito, ad esempio `"[::]:443:443/tcp"`.
-- Non aggiungere mai un binding IPv4, implicito o esplicito. Un `ports:` del
-  tipo `"8080:8080"` crea un listener IPv4 e non è ammesso.
-- Le reti `edge-v6` e `internal-v6` sono esterne e create da
+- I servizi backend restano solo su `internal` e non pubblicano porte
+  sull'host: si raggiungono tramite gli indirizzi statici (IPv4 e IPv6).
+- Solo il reverse proxy può stare su `edge` e pubblicare porte. La
+  pubblicazione dual-stack è il default: un `ports:` del tipo `"8080:8080"`
+  o `"80:80"` espone su entrambe le famiglie.
+- Per vincolare una porta a una sola famiglia si usa il binding esplicito:
+  `"[::]:443:443/tcp"` (solo IPv6) oppure `"0.0.0.0:443:443/tcp"` (solo IPv4).
+  Nel caso dual-stack "paritario" evitare questi vincoli e lasciare il default.
+- Le reti `edge` e `internal` sono esterne e create da
   `stacks/_network/compose.yml`: non ridefinirle nello stack.
 
 ### Segreti
@@ -63,8 +65,8 @@ lo stack non conforme e richiede un task `APPROVED` in `.ai/QUEUE.md`:
 - Nessun mount di `/var/run/docker.sock` o di altri socket del runtime.
 - Nessun `privileged: true`, nessun `pid: host`, `network_mode: host` o
   `ipc: host`.
-- Nessun binding IPv4 e nessuna rete Docker IPv4: solo `edge-v6` /
-  `internal-v6` con `ipv6_address` statico.
+- Solo reti `edge` / `internal` con indirizzi statici (`ipv4_address` +
+  `ipv6_address`); nessuna rete ad-hoc.
 - Immagine pinnata e `healthcheck` esplicito.
 - `restart: unless-stopped`.
 - Segreti solo tramite `env_file` esterno al repository o meccanismo
@@ -76,10 +78,10 @@ Dalla root del repository:
 
 ```bash
 docker compose -f stacks/<servizio>/compose.yml config
-grep -nE 'docker\.sock|0\.0\.0\.0' stacks/<servizio>/compose.yml   # nessun output
+grep -nE 'docker\.sock|privileged:\s*true|network_mode:\s*host' stacks/<servizio>/compose.yml   # nessun output
 ```
 
 Il primo comando deve uscire con codice `0`; il secondo non deve trovare
-nulla. Seguire poi `.ai/RUNBOOK.md` (pre-flight, deploy, verifica IPv6,
+nulla. Seguire poi `.ai/RUNBOOK.md` (pre-flight, deploy, verifica dual-stack,
 rollback). Ogni deploy richiede un task `APPROVED` in `.ai/QUEUE.md` e il
 backup dei file in `.backups/<timestamp>/`.

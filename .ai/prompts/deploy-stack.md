@@ -15,8 +15,8 @@
 3. Chiarire i requisiti mancanti prima di scrivere file (vedi
    *Chiarimento preventivo* in `AGENTS.md`):
    - nome del servizio e nome dello stack;
-   - se il servizio deve essere esposto su `edge-v6` o isolato su
-     `internal-v6`;
+   - se il servizio deve essere esposto su `edge` o isolato su
+     `internal`;
    - variabili d'ambiente e segreti obbligatori;
    - porta interna, volume persistente e UID/GID dei dati.
 4. Eseguire il pre-flight: `./scripts/preflight.sh`. Se lo script non è
@@ -41,22 +41,24 @@ Seguire `stacks/_template/README.md` per i campi da modificare.
 - **Mai** `:latest` né tag mobili (`:stable`, `:main`, `:edge`).
 - Se non esiste un tag stabile, fermarsi e chiedere indicazione all'operatore.
 
-## 3. Indirizzo IPv6 statico
+## 3. Indirizzi statici (IPv4 + IPv6)
 
 - Scegliere la rete in base al ruolo, secondo `.ai/NETWORK.md`:
-  - backend, database e servizi interni → `internal-v6`, host ID da `::10`
+  - backend, database e servizi interni → `internal`, host ID da `.10`/`::10`
     in su;
-  - solo reverse proxy e servizi esposti → `edge-v6`, host ID da `::20` in su.
-- Mai collegare un backend a `edge-v6`.
-- L'indirizzo deve essere libero: verificare `.ai/CONTEXT.md` e le reti
-  esistenti prima di assegnarlo. Non inventare prefissi: usare quelli
+  - solo reverse proxy e servizi esposti → `edge`, host ID da `.20`/`::20`
+    in su.
+- Mai collegare un backend a `edge`.
+- Gli indirizzi devono essere liberi: verificare `.ai/CONTEXT.md` e le reti
+  esistenti prima di assegnarli. Non inventare prefissi: usare quelli
   registrati in `.ai/CONTEXT.md`.
 - Dichiarare la rete come esterna (`external: true`); non ridefinire
-  `edge-v6` / `internal-v6` nello stack.
+  `edge` / `internal` nello stack.
 
 ```yaml
 networks:
-  internal-v6:
+  internal:
+    ipv4_address: "<INTERNAL_V4>::10"
     ipv6_address: "<ULA_SUBNET>::10"
 ```
 
@@ -69,12 +71,12 @@ Mantenere in `stacks/${STACK}/compose.yml`:
 - `cap_drop: ["ALL"]` (eventuali `cap_add` singoli, motivati e approvati);
 - `read_only: true` con `tmpfs` limitati per i path scrivibili;
 - `restart: unless-stopped`;
-- `healthcheck` reale eseguito su IPv6 (`[::1]` o indirizzo del servizio);
+- `healthcheck` reale (`[::1]`/`127.0.0.1` o indirizzo del servizio);
 - nessun mount di `docker.sock` o altri socket del runtime;
 - nessun `privileged`, `pid: host`, `network_mode: host`, `ipc: host`;
-- **zero binding IPv4** (`0.0.0.0`, `"<porta>:<porta>"` implicito); solo
-  `expose:` interno o binding esplicito `"[::]:<porta>:<porta>"` per il
-  reverse proxy.
+- pubblicazione porte solo tramite il reverse proxy su `edge`, dual-stack
+  (`"<porta>:<porta>"` espone su entrambe le famiglie); per i servizi
+  interni usare solo `expose:`.
 
 ## 5. Segreti
 
@@ -104,14 +106,8 @@ avviare il servizio.
 COMPOSE="stacks/${STACK}/compose.yml"
 
 docker compose -f "$COMPOSE" config          # exit code 0
-grep -nE 'docker\.sock|0\.0\.0\.0' "$COMPOSE"   # atteso: nessun output
+grep -nE 'docker\.sock|privileged:\s*true|network_mode:\s*host' "$COMPOSE"   # atteso: nessun output
 docker compose -f "$COMPOSE" config -q
-```
-
-Aggiungere anche il controllo IPv4 implicito sulle porte:
-
-```bash
-grep -nE '^\s*ports:' -A3 "$COMPOSE"    # ogni voce deve iniziare con "[::]:"
 ```
 
 Eseguire `./scripts/preflight.sh` (o i controlli equivalenti di
@@ -153,11 +149,11 @@ done
 # Esposizione porte
 ss -4 -tulnp
 ss -6 -tulpn
-docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '(^|[[:space:]])0\.0\.0\.0:'   # atteso: vuoto
+docker ps --format 'table {{.Names}}\t{{.Ports}}'
 ```
 
-Attesi: `state=running` e `health=healthy`; nessun listener applicativo IPv4;
-porte IPv6 su `[::]` o indirizzo IPv6 specifico.
+Attesi: `state=running` e `health=healthy`; porte pubblicate su entrambe le
+famiglie (`0.0.0.0` e `[::]`), coerenti con `.ai/CONTEXT.md`.
 
 **Circuit Breaker:** massimo 2 tentativi consecutivi per comando o servizio.
 Al secondo fallimento fermarsi, ripristinare la configurazione precedente
@@ -169,8 +165,8 @@ sessione.
 
 1. Aggiornare `.ai/CONTEXT.md` — preferibilmente con
    `./scripts/update-context.sh`; se lo script non è ancora disponibile,
-   aggiornare a mano container, `ipv6_address`, porte e stato healthcheck.
-   Registrare la tupla `(container, ipv6_address, porte)`.
+   aggiornare a mano container, `ipv4_address`, `ipv6_address`, porte e stato
+   healthcheck. Registrare la tupla `(container, ipv4_address, ipv6_address, porte)`.
 2. Appendere la sessione in `.ai/REPORT.md`: comandi, esito, anomalie,
    follow-up.
 3. Aggiornare lo stato del task in `.ai/QUEUE.md` (`DONE` o `BLOCKED`).
@@ -178,12 +174,13 @@ sessione.
 
 ```bash
 git add stacks/${STACK} .ai/CONTEXT.md .ai/REPORT.md .ai/QUEUE.md
-git commit -m "feat(stacks): add hardened ipv6-only ${STACK} stack"
+git commit -m "feat(stacks): add hardened dual-stack ${STACK} stack"
 ```
 
 ## Divieti specifici
 
-- Bind IPv4, reti Docker IPv4, NAT/port-forwarding verso container.
+- Pubblicare porte non autorizzate in `nftables`/`.ai/CONTEXT.md`, o creare
+  reti/subnet ad-hoc.
 - Rimuovere i campi di hardening del template.
 - Modificare `nftables`, `/etc/docker/daemon.json`, interfacce o
   `systemd-networkd` (Tier 3).

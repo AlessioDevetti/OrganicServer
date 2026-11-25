@@ -59,9 +59,9 @@ Reti Docker:
 
 ```bash
 docker network ls
-docker network inspect edge-v6
-docker network inspect internal-v6
-docker network inspect edge-v6 --format '{{json .EnableIPv6}} {{json .Options}}'
+docker network inspect edge
+docker network inspect internal
+docker network inspect edge --format '{{json .EnableIPv6}} {{json .Options}}'
 ```
 
 Risoluzione e raggiungibilità:
@@ -81,13 +81,13 @@ Confrontare i dati raccolti con `.ai/NETWORK.md` e `.ai/CONTEXT.md`:
 
 | Controllo | Atteso |
 | :--- | :--- |
-| Rete `edge-v6` | `EnableIPv6=true`, `Internal=false`, nessuna subnet IPv4 |
-| Rete `internal-v6` | `EnableIPv6=true`, `Internal=true`, nessuna subnet IPv4 |
-| Indirizzo container | `GlobalIPv6Address` uguale a quello in `.ai/CONTEXT.md` |
-| Porte pubblicate | solo IPv6 (`::` o indirizzo IPv6), mai `0.0.0.0` |
+| Rete `edge` | `EnableIPv6=true`, `Internal=false`, subnet IPv4 (RFC 1918) + IPv6 |
+| Rete `internal` | `EnableIPv6=true`, `Internal=true`, subnet IPv4 (RFC 1918) + IPv6 |
+| Indirizzo container | `IPAddress` (IPv4) e `GlobalIPv6Address` uguali a quelli in `.ai/CONTEXT.md` |
+| Porte pubblicate | su entrambe le famiglie, coerenti con `.ai/CONTEXT.md` |
 | `Healthcheck` | `healthy`, oppure `starting` entro lo start period |
-| Routing IPv6 | default route presente, ICMPv6 non filtrato |
-| DNS | risoluzione AAAA/DNS64 funzionante |
+| Routing | default route presente (solo su `edge`); ICMPv6/ICMPv4 non filtrati |
+| DNS | risoluzione A e AAAA funzionante |
 
 Una divergenza è un'anomalia: registrarla, non "correggerla" modificando
 rete o firewall.
@@ -98,13 +98,14 @@ Cause tipiche e verifica:
 
 1. **Container unhealthy** — probe errato, dipendenza non pronta, permessi
    sui volumi, crash applicativo. Leggere i log e il comando di healthcheck.
-2. **Indirizzo IPv6 errato o duplicato** — confrontare compose,
+2. **Indirizzi IPv4/IPv6 errati o duplicati** — confrontare compose,
    `.ai/CONTEXT.md` e `docker network inspect`.
-3. **Binding IPv4 o porta occupata** — `ss -4/-6 -tulpn`; collisioni con
+3. **Binding o porta occupata** — `ss -4/-6 -tulpn`; collisioni con
    `systemd-resolved`, reverse proxy o altri stack.
-4. **DNS64/NAT64 non funzionante** — `getent ahostsv6`, `resolvectl status`;
-   non aggiungere IPv4 all'host come workaround.
-5. **Firewall/ICMPv6** — regole `nft` mancanti o ICMPv6 filtrato; la
+4. **Risoluzione DNS (A/AAAA) non funzionante** — `getent hosts`,
+   `getent ahostsv6`, `resolvectl status`; non modificare rete/firewall come
+   workaround.
+5. **Firewall/ICMP** — regole `nft` mancanti o ICMPv6/ICMPv4 filtrato; la
    modifica è Tier 3, solo proposta.
 6. **Volume o permessi** — UID/GID non coerente con `user:`; nessuna
    cancellazione di volumi.

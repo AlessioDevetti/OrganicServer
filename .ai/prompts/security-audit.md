@@ -16,30 +16,28 @@
 3. Non modificare file di sistema, rete, firewall o container durante la
    fase di raccolta.
 
-## 1. Esposizione IPv4
+## 1. Esposizione dual-stack
 
 ```bash
 ss -4 -tulpn
-ss -4 -tulpn | grep -F 'docker-proxy'
+ss -6 -tulpn
 docker ps --format 'table {{.Names}}\t{{.Ports}}'
-docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '(^|[[:space:]])0\.0\.0\.0:'
 ```
 
-Atteso: nessun listener `docker-proxy`/`containerd`/processo applicativo
-Docker su IPv4; nessuna pubblicazione `0.0.0.0:<porta>`. Un listener IPv4 di
-management (es. `sshd`) è tollerato solo se previsto e va annotato, non
-rimosso.
+Atteso: i servizi esposti ascoltano su entrambe le famiglie (`0.0.0.0` e
+`[::]`, o su indirizzi specifici autorizzati) e le porte corrispondono ai
+pair autorizzati in `.ai/NETWORK.md` sezione 8 e in `.ai/CONTEXT.md`. Un
+listener di management (es. `sshd`) è tollerato solo se previsto e va
+annotato, non rimosso.
 
-## 2. Esposizione IPv6 e binding
+## 2. Coerenza delle porte pubblicate
 
 ```bash
-ss -6 -tulpn
-docker ps --format '{{.Ports}}' | grep -E '\[::\]|:::'
+docker ps --format '{{.Ports}}'
 ```
 
-Verificare che i servizi esposti ascoltino su `[::]` o su un indirizzo IPv6
-specifico e che le porte corrispondano ai pair autorizzati in `.ai/NETWORK.md`
-sezione 8 e in `.ai/CONTEXT.md`.
+Verificare che nessuna porta sia pubblicata su una famiglia o una porta non
+prevista: ogni `(indirizzo, porta)` deve comparire in `.ai/CONTEXT.md`.
 
 ## 3. Hardening di tutti gli stack
 
@@ -48,7 +46,7 @@ Per ogni `stacks/*/compose.yml` verificare la presenza dei vincoli:
 ```bash
 for f in stacks/*/compose.yml; do
   echo "== $f"
-  grep -nE '^\s*(user|security_opt|cap_drop|read_only|tmpfs|healthcheck|restart|image|ipv6_address|ports|privileged|pid|network_mode|ipc):' "$f"
+  grep -nE '^\s*(user|security_opt|cap_drop|read_only|tmpfs|healthcheck|restart|image|ipv4_address|ipv6_address|ports|privileged|pid|network_mode|ipc):' "$f"
 done
 ```
 
@@ -58,10 +56,10 @@ Checklist per stack:
 - [ ] `security_opt: ["no-new-privileges:true"]`.
 - [ ] `cap_drop: ["ALL"]`; eventuali `cap_add` singoli e documentati.
 - [ ] `read_only: true` con `tmpfs` limitati.
-- [ ] `healthcheck` presente e basato su IPv6 (`[::1]`, mai `127.0.0.1`).
+- [ ] `healthcheck` presente (o `disable: true` documentato per immagini
+      scratch), altrimenti basato su un probe reale.
 - [ ] `image:` pinnata (tag preciso o digest), mai `:latest`.
-- [ ] `ipv6_address` statico e coerente con `.ai/CONTEXT.md`.
-- [ ] Nessun `0.0.0.0`, nessun `ports:` implicito IPv4.
+- [ ] `ipv4_address` e `ipv6_address` statici e coerenti con `.ai/CONTEXT.md`.
 - [ ] Nessun mount di `/var/run/docker.sock`.
 - [ ] Nessun `privileged: true`, `pid: host`, `network_mode: host`,
       `ipc: host`.
@@ -69,10 +67,13 @@ Checklist per stack:
 Controllo aggregato delle violazioni:
 
 ```bash
-grep -nE 'docker\.sock|0\.0\.0\.0|:latest|privileged:\s*true|network_mode:\s*host|pid:\s*host|ipc:\s*host' stacks/*/compose.yml
+grep -nE 'docker\.sock|:latest|privileged:\s*true|network_mode:\s*host|pid:\s*host|ipc:\s*host' stacks/*/compose.yml
+grep -nE 'disable:\s*true' stacks/*/compose.yml   # healthcheck disabilitato: annotare se non motivato
 ```
 
-Atteso: nessun output. Ogni corrispondenza è una violazione da riportare.
+Atteso: nessun output dal primo comando (primitive vietate). Il secondo
+segnala gli healthcheck disabilitati (ammessi solo per immagini scratch, da
+motivare).
 
 Validazione sintattica (non applica nulla):
 
@@ -86,7 +87,7 @@ done
 
 ```bash
 git ls-files | grep -Ei '(^|/)\.env($|\.)|secret|private|\.pem$|\.key$|id_rsa'
-git grep -nE '(BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|password\s*=\s*[^[:space:]]+|api[_-]?key\s*=\s*[^[:space:]]+)' -- ':!*.example' ':!.ai/*'
+git grep -nE '(BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|password\s*=\s*[^[:space:]]+|api[_-]?key\s*=\s*[^[:space:]]+)' -- ':!*.example'
 ```
 
 Atteso: nessun file reale di segreti e nessun valore credenziale nei file
@@ -98,7 +99,7 @@ segnalare la rotazione all'operatore.
 Verificare anche `.gitignore`:
 
 ```bash
-git check-ignore -v .env .backups/ logs/ 2>/dev/null
+git check-ignore -v .env .backups/ 2>/dev/null
 ```
 
 ## 5. Coerenza di `.ai/CONTEXT.md` e `.ai/NETWORK.md`
@@ -106,22 +107,23 @@ git check-ignore -v .env .backups/ logs/ 2>/dev/null
 - Ogni container/stack registrato in `.ai/CONTEXT.md` deve corrispondere a
   uno stack reale in `stacks/` e a un container in esecuzione (o documentato
   come fermo).
-- Ogni tupla `(container, ipv6_address, porte)` deve combaciare con il
-  compose e con `docker inspect`.
+- Ogni tupla `(container, ipv4_address, ipv6_address, porte)` deve combaciare
+  con il compose e con `docker inspect`.
 - Le subnet e gli host ID devono rispettare lo schema di `.ai/NETWORK.md`
-  (`edge-v6` da `::20`, `internal-v6` da `::10`, nessuna subnet IPv4).
-- Le porte autorizzate in `.ai/CONTEXT.md` devono coincidere con i pair
-  IPv6 di `.ai/NETWORK.md` sezione 8.
+  (`edge` da `.20`/`::20`, `internal` da `.10`/`::10`, una subnet IPv4 RFC 1918
+  e una subnet IPv6 per rete).
+- Le porte autorizzate in `.ai/CONTEXT.md` devono coincidere con i pair di
+  `.ai/NETWORK.md` sezione 8.
 
 ```bash
-docker network inspect edge-v6 \
+docker network inspect edge \
   --format 'EnableIPv6={{.EnableIPv6}} internal={{.Internal}} ipam={{json .IPAM.Config}}'
-docker network inspect internal-v6 \
+docker network inspect internal \
   --format 'EnableIPv6={{.EnableIPv6}} internal={{.Internal}} ipam={{json .IPAM.Config}}'
 ```
 
-Attesi: `EnableIPv6=true`; `Internal=false` su `edge-v6`,
-`Internal=true` su `internal-v6`; nessuna subnet IPv4.
+Attesi: `EnableIPv6=true`; `Internal=false` su `edge`,
+`Internal=true` su `internal`; una subnet IPv4 e una subnet IPv6 per rete.
 
 ## 6. Controlli host (read-only)
 

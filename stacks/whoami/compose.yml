@@ -1,14 +1,14 @@
 # ==================================================================
-# OrganicServer — stack pilota whoami-v6
+# OrganicServer — stack pilota whoami (dual-stack)
 #
-# Servizio HTTP minimale per validare la rete edge-v6 e il baseline
-# hardened. Derivato da stacks/_template/compose.yml.
+# Servizio HTTP minimale per validare la rete edge (dual-stack) e il
+# baseline hardened. Derivato da stacks/_template/compose.yml.
 #
-# Nessuna porta pubblicata: il container è raggiungibile solo sulla
-# rete IPv6 edge-v6 all'indirizzo statico fd00:dead:beef:20::10.
+# Nessuna porta pubblicata sull'host: il container è raggiungibile solo
+# sulla rete edge agli indirizzi statici 172.20.0.20 / fd00:dead:beef:20::20.
 # ==================================================================
 
-name: whoami-v6
+name: whoami
 
 services:
   whoami:
@@ -22,7 +22,7 @@ services:
     # fallirebbe. whoami ascolta su tutte le interfacce del container.
     command:
       - "--port=8080"
-      - "--name=whoami-v6"
+      - "--name=whoami"
 
     # --- Mandatory hardening: do not remove -------------------------
     security_opt:
@@ -40,27 +40,28 @@ services:
     # Nessun segreto richiesto dal pilota. Il file resta opzionale per
     # consentire la validazione anche senza secrets montati.
     env_file:
-      - path: /etc/organic-server/secrets/whoami-v6.env
+      - path: /etc/organic-server/secrets/whoami.env
         required: false
 
-    # Solo edge-v6: indirizzo deterministico nel range degli edge
-    # services (::10–::1f), registrato in .ai/CONTEXT.md.
+    # Solo edge: indirizzi deterministici nel range degli edge services
+    # (.20 / ::20), registrati in .ai/CONTEXT.md.
     networks:
-      edge-v6:
-        ipv6_address: "fd00:dead:beef:20::10"
+      edge:
+        ipv4_address: "172.20.0.20"
+        ipv6_address: "fd00:dead:beef:20::20"
 
     expose:
       - "8080"
 
     # traefik/whoami è un'immagine scratch: non contiene shell, curl o
     # wget, quindi un healthcheck exec fallirebbe sempre. L'endpoint
-    # /health viene interrogato dall'esterno su IPv6 (RUNBOOK §3.4);
-    # il controllo Docker è disabilitato esplicitamente invece di
-    # dichiarare un test che non può essere eseguito.
+    # /health viene interrogato dall'esterno (RUNBOOK §3.4); il controllo
+    # Docker è disabilitato esplicitamente invece di dichiarare un test
+    # che non può essere eseguito.
     healthcheck:
       disable: true
 
 networks:
-  edge-v6:
+  edge:
     external: true
-    name: edge-v6
+    name: edge

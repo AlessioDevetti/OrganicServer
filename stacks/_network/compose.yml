@@ -1,15 +1,16 @@
-# OrganicServer - shared IPv6-only Docker networks.
+# OrganicServer - shared dual-stack Docker networks (IPv4 + IPv6).
 #
 # Declarative source of truth for the networks described in .ai/NETWORK.md:
-#   edge-v6      routed/exposed frontend network, no IPv6 masquerading
-#   internal-v6  isolated backend network, no outbound connectivity
+#   edge      routed/exposed frontend network (dual-stack)
+#   internal  isolated backend network (dual-stack, internal: true)
 #
-# Subnets are ULA examples inside fd00::/8 (RFC 4193). Record the real values
-# in .ai/CONTEXT.md after the networks are created on the host.
+# IPv6 subnets are ULA examples inside fd00::/8 (RFC 4193); IPv4 subnets are
+# RFC 1918 examples. Record the real values in .ai/CONTEXT.md after the
+# networks are created on the host.
 #
-# NOTE: edge-v6 uses a ULA example so the template stays self-contained. To
-# expose services without NAT, replace it with a slice of the delegated
-# provider prefix (see .ai/NETWORK.md) before applying.
+# NOTE: the `edge` IPv6 prefix is a ULA example so the template stays
+# self-contained. To expose services with native routing, replace it with a
+# slice of the provider-delegated prefix (see .ai/NETWORK.md) before applying.
 #
 # Applying this file creates host-level Docker networks and is Tier 2:
 # validate first with `docker compose -f stacks/_network/compose.yml config`.
@@ -17,44 +18,48 @@
 name: organic-networks
 
 # Compose drops top-level networks that no service references. This anchor
-# keeps the project model complete without running a workload: replicas is 0,
-# so `up` creates the networks and starts no container.
+# keeps the project model complete without running a real workload: it runs
+# `alpine true` once and exits immediately. `docker compose up` creates the
+# two networks and the anchor container exits cleanly (exit 0).
 services:
   network-anchor:
-    image: alpine:3
+    image: alpine:3.20.3
     command: ["true"]
     restart: "no"
-    deploy:
-      replicas: 0
     networks:
-      - edge-v6
-      - internal-v6
+      - edge
+      - internal
 
 networks:
-  edge-v6:
-    name: edge-v6
+  edge:
+    name: edge
     driver: bridge
     enable_ipv6: true
     internal: false
     ipam:
       driver: default
       config:
+        - subnet: "172.20.0.0/24"
+          gateway: "172.20.0.1"
         - subnet: "fd00:dead:beef:20::/64"
           gateway: "fd00:dead:beef:20::1"
     driver_opts:
-      com.docker.network.bridge.name: "br-edge-v6"
-      com.docker.network.bridge.enable_ip_masquerade: "false"
+      com.docker.network.bridge.name: "br-edge"
+      # IPv4 (private range) egress uses Docker NAT; IPv6 is routed natively
+      # (no NAT66). Leave IPv4 masquerade enabled for outbound connectivity.
+      com.docker.network.bridge.enable_ip_masquerade: "true"
 
-  internal-v6:
-    name: internal-v6
+  internal:
+    name: internal
     driver: bridge
     enable_ipv6: true
     internal: true
     ipam:
       driver: default
       config:
+        - subnet: "172.30.0.0/24"
+          gateway: "172.30.0.1"
         - subnet: "fd00:dead:beef:30::/64"
           gateway: "fd00:dead:beef:30::1"
     driver_opts:
-      com.docker.network.bridge.name: "br-internal-v6"
-      com.docker.network.bridge.enable_ip_masquerade: "false"
+      com.docker.network.bridge.name: "br-internal"

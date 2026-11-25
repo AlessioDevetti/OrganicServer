@@ -69,13 +69,13 @@ ip -4 a
 ip -6 a
 ip -4 r
 ip -6 r
+ss -4 -tulnp
 ss -6 -tulnp
 getent ahostsv6 <fqdn>
 ```
 
-Verificare la connettività in uscita IPv6 e la risoluzione DNS64. IPv4 è
-solo management plane: un suo fallimento non autorizza a pubblicare servizi
-su IPv4 né a modificare rete o firewall.
+Verificare la connettività in uscita IPv4 e IPv6 e la risoluzione DNS. Un
+fallimento non autorizza a modificare rete o firewall.
 
 Creare la directory di backup della sessione:
 
@@ -107,7 +107,7 @@ cp -r stacks/_template "stacks/${STACK}"
 
 Modificare poi `stacks/${STACK}/compose.yml` seguendo
 `stacks/_template/README.md`. I vincoli di hardening (utente non-root,
-`no-new-privileges`, `cap_drop: ALL`, `read_only`, `tmpfs`, rete IPv6-only,
+`no-new-privileges`, `cap_drop: ALL`, `read_only`, `tmpfs`, rete dual-stack,
 immagine pinnata, healthcheck) non vanno rimossi.
 
 ### 2.2 Controlli preliminari
@@ -192,42 +192,32 @@ nel task e segnalazione in `.ai/REPORT.md`.
 **Log:** comandi eseguiti, output di `ps`, stato degli healthcheck, hash del
 commit.
 
-## 3. Verifica esposizione solo IPv6
+## 3. Verifica esposizione dual-stack
 
 Tutte le operazioni sono di sola lettura. Eseguire dopo ogni deploy e
 durante ogni audit.
 
-### 3.1 Socket IPv4
+### 3.1 Socket IPv4 e IPv6
 
 ```bash
 ss -4 -tulpn
-ss -4 -tulpn | grep -F 'docker-proxy'
+ss -6 -tulpn
 ```
 
-Atteso: il secondo comando non produce output. Qualsiasi listener
-`docker-proxy`, `containerd` o processo applicativo Docker su IPv4 è
-un'anomalia. Un listener IPv4 di management (ad esempio `sshd`) è tollerato
-solo se previsto e va annotato, non rimosso dall'agente.
+Atteso: le porte applicative pubblicate ascoltano su entrambe le famiglie
+(`0.0.0.0` e `[::]`, oppure su indirizzi specifici autorizzati). Un listener
+applicativo su una famiglia o una porta non prevista è un'anomalia da
+annotare. Un listener di management (ad esempio `sshd`) è tollerato solo se
+previsto e va annotato, non rimosso dall'agente.
 
-Controllo equivalente lato Docker:
+### 3.2 Mapping porte Docker
 
 ```bash
 docker ps --format 'table {{.Names}}\t{{.Ports}}'
-docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '(^|[[:space:]])0\.0\.0\.0:'
 ```
 
-Il secondo comando deve essere vuoto. Le pubblicazioni IPv6 compaiono come
+Le pubblicazioni dual-stack compaiono come `0.0.0.0:<porta>->...` e
 `[::]:<porta>->...` (o `:::<porta>->...` nelle versioni precedenti).
-
-### 3.2 Socket IPv6
-
-```bash
-ss -6 -tulpn
-ss -6 -tulpn | grep -E ':(<porta>)'
-```
-
-Atteso: le porte applicative pubblicate ascoltano su `[::]` o su un
-indirizzo IPv6 specifico, mai su `0.0.0.0`.
 
 ### 3.3 Ispezione dei container e delle reti
 
@@ -243,30 +233,31 @@ done
 
 Verificare che:
 
-- ogni `HostIp` in `NetworkSettings.Ports` sia `::` o un indirizzo IPv6;
-- nessun valore sia `0.0.0.0`;
-- ogni container abbia un `GlobalIPv6Address` coerente con `.ai/CONTEXT.md`
-  e nessun `IPAddress` IPv4 sulla rete applicativa.
+- ogni `HostIp` in `NetworkSettings.Ports` sia `0.0.0.0`/`::` (o un indirizzo
+  specifico autorizzato);
+- ogni container abbia `GlobalIPv6Address` e `IPAddress` coerenti con
+  `.ai/CONTEXT.md`.
 
 ```bash
-docker network inspect edge-v6 \
+docker network inspect edge \
   --format 'EnableIPv6={{.EnableIPv6}} internal={{.Internal}} ipam={{json .IPAM.Config}}'
-docker network inspect internal-v6 \
+docker network inspect internal \
   --format 'EnableIPv6={{.EnableIPv6}} internal={{.Internal}} ipam={{json .IPAM.Config}}'
 ```
 
-Attesi: `EnableIPv6=true`, `Internal=false` su `edge-v6`, `Internal=true` su
-`internal-v6`, e configurazioni IPAM senza subnet IPv4.
+Attesi: `EnableIPv6=true`; `Internal=false` su `edge`, `Internal=true` su
+`internal`; configurazioni IPAM con una subnet IPv4 (RFC 1918) e una subnet
+IPv6.
 
 ### 3.4 Probe dall'interno del container
 
 ```bash
 docker exec <container> getent hosts <hostname>
 docker exec <container> wget -q -O /dev/null 'http://[::1]:<porta>/'
+docker exec <container> wget -q -O /dev/null 'http://127.0.0.1:<porta>/'
 ```
 
-Adattare il probe all'immagine: l'importante è che usi IPv6 e mai
-`127.0.0.1`.
+Adattare il probe all'immagine: verificare entrambe le famiglie.
 
 **Blocco:** non modificare `nftables`, `/etc/docker/daemon.json`, interfacce
 o `systemd-networkd` per "aggiustare" un'esposizione. Sono modifiche Tier 3.
@@ -375,13 +366,14 @@ Tutte le operazioni sono di sola lettura.
    docker network inspect <rete>
    docker inspect --format '{{json .NetworkSettings.Networks}}' <container>
    ```
-4. Verifica che Docker abbia IPv6 attivo e nessun masquerading IPv6:
+4. Verifica che Docker abbia IPv6 attivo e subnet dual-stack:
    ```bash
-   docker network inspect edge-v6 --format '{{json .EnableIPv6}} {{json .Options}}'
-   docker network inspect internal-v6 --format '{{json .Internal}} {{json .IPAM.Config}}'
-   docker run --rm --network edge-v6 alpine:3.20.3 ping -6 -c 3 <IPV6_TARGET>
+   docker network inspect edge --format '{{json .EnableIPv6}} {{json .Options}}'
+   docker network inspect internal --format '{{json .Internal}} {{json .IPAM.Config}}'
+   docker run --rm --network edge alpine:3.20.3 ping -6 -c 3 <IPV6_TARGET>
+   docker run --rm --network edge alpine:3.20.3 ping -4 -c 3 <IPV4_TARGET>
    ```
-   Attesi: `EnableIPv6=true`, `com.docker.network.bridge.enable_ip_masquerade=false`, `Internal=false` su `edge-v6` e `Internal=true` su `internal-v6`, subnet coerenti con `.ai/CONTEXT.md` e risposta ICMPv6 dal target. Il template versionato del daemon è `config/docker/daemon.json.example`; la sua applicazione a `/etc/docker/daemon.json` è Tier 3 e spetta all'operatore.
+   Attesi: `EnableIPv6=true`, `com.docker.network.bridge.enable_ip_masquerade=true` (NAT IPv4) su `edge`, `Internal=false` su `edge` e `Internal=true` su `internal`, subnet IPv4+IPv6 coerenti con `.ai/CONTEXT.md` e risposta ICMPv6/ICMPv4 dal target. Il template versionato del daemon è `config/docker/daemon.json.example`; la sua applicazione a `/etc/docker/daemon.json` è Tier 3 e spetta all'operatore.
 5. Risoluzione e raggiungibilità dall'interno del container:
    ```bash
    docker exec <container> getent hosts <hostname>

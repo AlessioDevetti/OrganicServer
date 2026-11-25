@@ -1,5 +1,5 @@
 # ==================================================================
-# OrganicServer — hardened IPv6-only stack blueprint
+# OrganicServer — hardened dual-stack stack blueprint (IPv4 + IPv6)
 #
 # Copy this directory to stacks/<service>/ and read README.md before
 # changing anything. The service below is a placeholder: it exists to
@@ -53,23 +53,30 @@ services:
       - path: /etc/organic-server/secrets/example-app.env
         required: false
 
-    # Deterministic IPv6 address on the network that matches the role.
-    #   internal-v6: backend/database, host IDs ::10 upward
-    #   edge-v6:     reverse proxy/edge only, host IDs ::20 upward
-    # Never attach a backend service to edge-v6. Record the address in
+    # Deterministic addresses on the network that matches the role.
+    #   internal: backend/database, host IDs ::10 / .10 upward
+    #   edge:     reverse proxy/edge only, host IDs ::20 / .20 upward
+    # Never attach a backend service to edge. Record both addresses in
     # .ai/CONTEXT.md before the first deploy.
     networks:
-      internal-v6:
+      internal:
+        ipv4_address: "172.30.0.10"
         ipv6_address: "fd00:dead:beef:30::10"
 
     # Internal only: no host port publishing. Only the reverse proxy may
-    # publish on edge-v6, and only with an IPv6 host binding.
-    # Internal services are reached at http://[<ipv6_address>]:8080.
+    # publish on edge, and only with an explicit binding.
+    # Internal services are reached at http://172.30.0.10:8080 or
+    # http://[fd00:dead:beef:30::10]:8080.
     expose:
       - "8080"
 
-    # Probe over IPv6 loopback, never over IPv4 loopback.
-    # Replace with the real readiness endpoint of the service.
+    # Dual-stack publication example (reverse proxy only). Publishing on
+    # both families is the default; use "[::]:..." and "0.0.0.0:..." only
+    # when a single family must be pinned.
+    # ports:
+    #   - "8080:8080"
+
+    # Probe over loopback. Replace with the real readiness endpoint.
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null 'http://[::1]:8080/' || exit 1"]
       interval: 30s
@@ -78,9 +85,9 @@ services:
       start_period: 10s
 
 networks:
-  edge-v6:
+  edge:
     external: true
-    name: edge-v6
-  internal-v6:
+    name: edge
+  internal:
     external: true
-    name: internal-v6
+    name: internal

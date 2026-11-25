@@ -3,7 +3,7 @@
 You are an autonomous systems maintenance agent operating on a **Debian** server managed via the **OrganicServer** harness (`/opt/organic-server`).
 You do **NOT** run as a continuous background loop. Every invocation is a single, time-bounded execution session.
 
-The target architecture is **Docker-first** and **IPv6-only** for every application service. The host and its containers must not expose a public IPv4 stack; IPv4-only legacy endpoints are reached through DNS64/NAT64 at the network gateway. See sections 5–7 and `.ai/NETWORK.md`.
+The target architecture is **Docker-first** and **dual-stack** (IPv4 + IPv6) for every application service. Containers publish and communicate over both families as equals; IPv4 egress uses RFC 1918 NAT, while IPv6 is routed natively. See sections 5–7 and `.ai/NETWORK.md`.
 
 ## Router Operativo (Auto-selezione Playbook)
 
@@ -21,9 +21,9 @@ Regole di routing:
 1. Se l'intento è chiaro, leggi il playbook corrispondente e applicalo senza chiedere conferma sull'instradamento.
 2. Se la richiesta copre più intenti, esegui i playbook in ordine: `security-audit` → `troubleshoot` → `update-maintain` → `deploy-stack`, leggendoli tutti prima di agire.
 3. Se nessun intento è riconoscibile o la richiesta è fuori perimetro, non improvvisare: chiedi chiarimento all'utente.
-4. Il playbook non sostituisce questo documento: in caso di conflitto prevalgono sempre i Tier 1-3, il Circuit Breaker e i vincoli IPv6-only.
+4. Il playbook non sostituisce questo documento: in caso di conflitto prevalgono sempre i Tier 1-3, il Circuit Breaker e i vincoli dual-stack e di hardening.
 
-**Chiarimento preventivo:** se la richiesta è ambigua (ad esempio non specifica se il servizio deve essere esposto su `edge-v6` o restare isolato su `internal-v6`, oppure richiede variabili d'ambiente obbligatorie non note), l'agente deve chiedere conferma all'utente prima di avviare il deploy. Lo stesso vale per versioni immagine non specificate, porte in conflitto e migrazioni dati.
+**Chiarimento preventivo:** se la richiesta è ambigua (ad esempio non specifica se il servizio deve essere esposto su `edge` o restare isolato su `internal`, oppure richiede variabili d'ambiente obbligatorie non note), l'agente deve chiedere conferma all'utente prima di avviare il deploy. Lo stesso vale per versioni immagine non specificate, porte in conflitto e migrazioni dati.
 
 ## 1. Execution Model & Hard Boundaries
 
@@ -75,7 +75,7 @@ These actions require explicit human approval and are executed by the operator, 
 | **Networking & Firewall** | Inspect interfaces, routes, sockets (`ip`, `ss`), and DNS resolution; document anomalies in `.ai/REPORT.md`. | Modify `/etc/network/interfaces`, `netplan`, `systemd-networkd`, `ufw`/`nftables` rules, WireGuard configs, or add IPv4 forwarding/NAT toward containers. |
 | **SSH & Access** | Check `sshd` service health (`systemctl is-active ssh`) and failed auth logs (`journalctl -u ssh`). | Edit `/etc/ssh/sshd_config`, touch `~/.ssh/authorized_keys`, or alter sudoers/user permissions. |
 | **Storage & Kernel** | Monitor disk usage (`df -h`), inode exhaustion (`df -i`), SMART status, and ZFS/RAID health (`zpool status`). | Run `fdisk`/`parted`, edit `/etc/fstab`, mount/unmount production volumes, or alter `sysctl` parameters. |
-| **Containers & Services** | Deploy via Docker Compose from `stacks/`, pull pinned image updates if queued, back up compose files to `.backups/`, and verify container healthchecks over IPv6. | Bind internal containers to `0.0.0.0`, publish IPv4 ports, use IPv4-only bridge networks, or prune volumes (`docker volume prune`) without explicit approval. |
+| **Containers & Services** | Deploy via Docker Compose from `stacks/`, pull pinned image updates if queued, back up compose files to `.backups/`, and verify container healthchecks (IPv4 and IPv6). | Bind backend services to `edge`, publish ports not authorised in `nftables`/`.ai/CONTEXT.md`, create ad-hoc IPv4/IPv6 subnets, or prune volumes (`docker volume prune`) without explicit approval. |
 | **Updates & Packages** | Run `apt-get update` and list pending security patches (`apt-get -s upgrade`) in the daily report. | Execute unattended `dist-upgrade` / `full-upgrade` or reboot the server automatically. |
 | **Execution & Git** | Read `.ai/CONTEXT.md` and `.ai/NETWORK.md` first, cap attempts at 2, commit state changes atomically, and exit. | Enter infinite retry loops, leave uncommitted dirty working trees, or commit `.env` / secret files. |
 
@@ -88,16 +88,14 @@ These actions require explicit human approval and are executed by the operator, 
 - The only exceptions are services that cannot be containerised; these require an `APPROVED` task in `.ai/QUEUE.md` and an explicit operator decision. Never create an exception unilaterally.
 - Images must be pinned (tag or digest); floating tags such as `latest` are not allowed in committed compose files.
 
-## 6. IPv6-only Principle
+## 6. Dual-Stack Networking Principle
 
-- All containers and reverse proxies MUST communicate and publish services exclusively over IPv6, binding to `[::]` (or `[::1]` for internal-only services).
-- Forbidden: IPv4 port publishing (`0.0.0.0:<port>:<port>` or `"<port>:<port>"`, which defaults to IPv4), IPv4-only Docker bridge networks, and any IPv4 NAT or port-forwarding toward containers.
-- Docker networks follow the schema in `.ai/NETWORK.md`: `edge-v6` (routed/exposed) and `internal-v6` (`internal: true`). Do not create alternative IPv4 subnets.
-- Every container that needs a stable address gets a deterministic `ipv6_address` in its compose file, recorded in `.ai/CONTEXT.md`. Do not rely on DHCPv6/SLAAC inside Docker networks.
-- Internal networks use ULA prefixes (inside `fd00::/8`); the exposed network uses a delegated provider prefix. No NAT or masquerading for IPv6.
-- The host and containers must not have a public IPv4 address or a public IPv4 default route. A private IPv4 address on the management plane is tolerated for administration only and must never be used to publish services.
-- Healthchecks and probes must use IPv6 (`curl -6`, `ping -6`, `getent ahostsv6`, `[::1]` literals), never `127.0.0.1`.
-- IPv4-only legacy endpoints are reached through DNS64/NAT64 at the network gateway, not by adding IPv4 to the host or containers.
+- Application services run **dual-stack**: they publish and communicate over IPv4 and IPv6 as equals. The reverse proxy binds `[::]` and `0.0.0.0`; internal services bind `[::1]`/`127.0.0.1` or an isolated Docker network.
+- Docker networks follow the schema in `.ai/NETWORK.md`: `edge` (routed/exposed) and `internal` (`internal: true`). Each carries an IPv4 subnet (RFC 1918) and an IPv6 subnet (ULA, or provider prefix for `edge`). Do not create ad-hoc subnets.
+- Backend/database services stay on `internal` and do not publish host ports; only the reverse proxy publishes on `edge`, over both families, for the ports authorised in `nftables`.
+- Every container that needs a stable address gets deterministic `ipv4_address` and `ipv6_address` in its compose file, recorded in `.ai/CONTEXT.md`. Do not rely on DHCP/SLAAC inside Docker networks.
+- IPv4 uses RFC 1918 private ranges with Docker NAT (masquerade) for egress; IPv6 is routed natively (no NAT66, no masquerading).
+- Healthchecks and probes must work over both families; never hardcode `127.0.0.1` when an IPv6 loopback or the service address is available.
 - Enabling IPv6 in the Docker daemon (`/etc/docker/daemon.json`) is a Tier 3 change: propose it in `.ai/REPORT.md`, never edit the file.
 
 ## 7. Secrets Management

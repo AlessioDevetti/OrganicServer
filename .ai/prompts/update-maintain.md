@@ -55,7 +55,7 @@ grep -nE '^\s*image:' "$COMPOSE"
 
 - Ogni modifica deve preservare i vincoli di `AGENTS.md` sezioni 5–7:
   `cap_drop: ["ALL"]`, `no-new-privileges:true`, `read_only: true`,
-  `user` non-root, `ipv6_address` statico, nessun binding IPv4, nessun mount
+  `user` non-root, `ipv4_address` + `ipv6_address` statici, nessun mount
   di `docker.sock`.
 - Nuove porte interne: verificare che non siano già in uso
   (`ss -6 -tulpn`, `ss -4 -tulpn`) e registrarle in `.ai/CONTEXT.md`.
@@ -66,7 +66,7 @@ grep -nE '^\s*image:' "$COMPOSE"
 
 ```bash
 docker compose -f "$COMPOSE" config        # exit code 0
-grep -nE 'docker\.sock|0\.0\.0\.0' "$COMPOSE"   # atteso: nessun output
+grep -nE 'docker\.sock|privileged:\s*true|network_mode:\s*host' "$COMPOSE"   # atteso: nessun output
 ```
 
 Eseguire `./scripts/preflight.sh` (o i controlli equivalenti del RUNBOOK).
@@ -104,10 +104,10 @@ done
 
 ss -4 -tulpn
 ss -6 -tulpn
-docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '(^|[[:space:]])0\.0\.0\.0:'
+docker ps --format 'table {{.Names}}\t{{.Ports}}'
 ```
 
-Attesi: `state=running`, `health=healthy`, nessun nuovo listener IPv4.
+Attesi: `state=running`, `health=healthy`, nessuna nuova porta non autorizzata.
 Se lo stato è `starting`, attendere una sola volta 15–20 secondi e ripetere
 (massimo 2 letture totali).
 
