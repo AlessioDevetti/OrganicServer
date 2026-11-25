@@ -1,0 +1,66 @@
+# ==================================================================
+# OrganicServer — stack pilota whoami-v6
+#
+# Servizio HTTP minimale per validare la rete edge-v6 e il baseline
+# hardened. Derivato da stacks/_template/compose.yml.
+#
+# Nessuna porta pubblicata: il container è raggiungibile solo sulla
+# rete IPv6 edge-v6 all'indirizzo statico fd00:dead:beef:20::10.
+# ==================================================================
+
+name: whoami-v6
+
+services:
+  whoami:
+    # Tag immutabile e verificabile; mai tag flottanti.
+    image: traefik/whoami:v1.10.3
+
+    # Immagine scratch eseguita con UID/GID non privilegiati.
+    user: "65534:65534"
+
+    # Porta non privilegiata: con cap_drop: ALL il bind su porta <1024
+    # fallirebbe. whoami ascolta su tutte le interfacce del container.
+    command:
+      - "--port=8080"
+      - "--name=whoami-v6"
+
+    # --- Mandatory hardening: do not remove -------------------------
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+      - /run:noexec,nosuid,size=16m
+    # ----------------------------------------------------------------
+
+    restart: unless-stopped
+
+    # Nessun segreto richiesto dal pilota. Il file resta opzionale per
+    # consentire la validazione anche senza secrets montati.
+    env_file:
+      - path: /etc/organic-server/secrets/whoami-v6.env
+        required: false
+
+    # Solo edge-v6: indirizzo deterministico nel range degli edge
+    # services (::10–::1f), registrato in .ai/CONTEXT.md.
+    networks:
+      edge-v6:
+        ipv6_address: "fd00:dead:beef:20::10"
+
+    expose:
+      - "8080"
+
+    # traefik/whoami è un'immagine scratch: non contiene shell, curl o
+    # wget, quindi un healthcheck exec fallirebbe sempre. L'endpoint
+    # /health viene interrogato dall'esterno su IPv6 (RUNBOOK §3.4);
+    # il controllo Docker è disabilitato esplicitamente invece di
+    # dichiarare un test che non può essere eseguito.
+    healthcheck:
+      disable: true
+
+networks:
+  edge-v6:
+    external: true
+    name: edge-v6
