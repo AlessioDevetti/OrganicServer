@@ -2,61 +2,360 @@
 
 > Procedure eseguibili dall'agente nei limiti di `AGENTS.md`. Le azioni Tier 3 non sono coperte da questo runbook: vanno proposte in `## Pending Human Approval` dentro `.ai/REPORT.md` e lasciate all'operatore.
 > Ogni sezione termina con la voce da registrare in `.ai/REPORT.md`.
+> Tutti i comandi si eseguono dalla root del repository, `/opt/organic-server`, sul branch `host/<hostname>`.
 
 ## 1. Pre-flight check
 
 Da eseguire all'inizio di ogni sessione, prima di qualsiasi modifica.
 
-1. Leggere `AGENTS.md`, `.ai/CONTEXT.md`, `.ai/QUEUE.md` e questo runbook.
-2. Verificare lo stato del repository: `git status` deve essere pulito sul branch `host/<hostname>`.
-3. Rilevare il contesto host (sola lettura):
+### 1.1 Contesto e repository
+
+1. Leggere `AGENTS.md`, `.ai/CONTEXT.md`, `.ai/QUEUE.md`, `.ai/NETWORK.md` e questo runbook.
+2. Verificare lo stato del repository:
    ```bash
-   date -u
-   uptime
-   df -h
-   free -m
-   systemctl is-active docker
-   ss -tulnp
-   ip -4 a && ip -6 a
-   ip -4 r && ip -6 r
+   git status --short
+   git branch --show-current
+   git log --oneline -n 5
    ```
-4. Verificare la connettività in uscita e la risoluzione DNS su entrambe le famiglie.
-5. Verificare che esista la directory di backup della sessione: `.backups/<timestamp>/`.
+   Il working tree deve essere pulito sul branch `host/<hostname>`. Se ci sono modifiche non attribuibili alla sessione corrente, fermarsi e registrare l'anomalia.
 
-**Blocco:** se un comando di rete o DNS fallisce, non procedere con aggiornamenti di pacchetti o immagini; registrare il diagnostico ed uscire.
+### 1.2 Risorse host
 
-**Log:** esito del pre-flight e anomalie rilevate.
+```bash
+date -u
+uptime
+df -h
+df -i
+free -m
+```
 
-## 2. Validazione e Deploy di uno stack
+**Blocco:** se il filesystem che ospita `/` o `/var/lib/docker` è oltre il
+90% di spazio o di inode, non avviare pull, build o deploy. Registrare
+l'output esatto e uscire con lo stato `BLOCKED`.
 
-Prerequisito: task in `.ai/QUEUE.md` con stato `APPROVED` e stack presente in `stacks/` (o `manifests/` per gli asset non ancora migrati).
+### 1.3 Docker daemon e Compose
 
-1. Validare la configurazione senza applicarla:
-   ```bash
-   docker compose -f <file-compose> config -q
-   ```
-2. Verificare che le porte dichiarate non siano già in uso: `ss -tulnp`.
-3. Verificare che i binding interni siano su `127.0.0.1` / `[::1]` o su rete interna, non su `0.0.0.0` / `[::]`, salvo esposizione esplicita via reverse proxy.
-4. Copiare i file che verranno modificati in `.backups/<timestamp>/`.
-5. Applicare in modo dichiarativo:
-   ```bash
-   docker compose -f <file-compose> pull
-   docker compose -f <file-compose> up -d
-   ```
-6. Verificare lo stato e gli healthcheck:
-   ```bash
-   docker compose -f <file-compose> ps
-   docker inspect --format '{{.State.Health.Status}}' <container>
-   ```
-7. Aggiornare `.ai/CONTEXT.md` con container, indirizzi IPv6 e porte osservate.
+```bash
+systemctl is-active docker
+docker version --format '{{.Server.Version}}'
+docker compose version
+```
 
-**Rollback:** in caso di esito negativo, applicare la sezione 4 e ripristinare i file da `.backups/<timestamp>/`.
+Attesi: `active`, una versione del server Docker e Docker Compose v2. Se il
+daemon non è attivo, non avviarlo e non riavviarlo: registrare l'errore e
+uscire. Il riavvio del daemon Docker è un intervento infrastrutturale, non
+un'operazione di routine dell'agente.
 
-**Retry:** massimo 2 tentativi; poi stato `BLOCKED` nel task e segnalazione in `.ai/REPORT.md`.
+### 1.4 Sintassi Compose di tutti gli stack
 
-**Log:** comandi eseguiti, output di `ps`, stato healthcheck, hash del commit.
+```bash
+for f in stacks/*/compose.yml; do
+  docker compose -f "$f" config -q || {
+    echo "INVALID: $f"
+    exit 1
+  }
+done
+```
 
-## 3. Diagnostica IPv6 e Container
+Il comando è idempotente, non contatta il daemon e non applica nulla.
+Include `stacks/_template/compose.yml`, che deve restare sempre valido.
+Qualsiasi file non valido blocca la sessione: correggere solo se esiste un
+task `APPROVED`, altrimenti registrare e uscire.
+
+### 1.5 Rete, DNS e backup
+
+```bash
+ip -4 a
+ip -6 a
+ip -4 r
+ip -6 r
+ss -6 -tulnp
+getent ahostsv6 <fqdn>
+```
+
+Verificare la connettività in uscita IPv6 e la risoluzione DNS64. IPv4 è
+solo management plane: un suo fallimento non autorizza a pubblicare servizi
+su IPv4 né a modificare rete o firewall.
+
+Creare la directory di backup della sessione:
+
+```bash
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p ".backups/${TS}"
+```
+
+**Blocco:** se un comando di rete o DNS fallisce, non procedere con
+aggiornamenti di pacchetti o immagini; registrare il diagnostico ed uscire.
+
+**Log:** esito del pre-flight, versioni Docker/Compose, spazio libero e
+anomalie rilevate.
+
+## 2. Deploy di un singolo stack
+
+Prerequisito: task in `.ai/QUEUE.md` con stato `APPROVED` e stack presente
+in `stacks/`.
+
+### 2.1 Nuovo stack: copia dal template
+
+Ogni nuovo servizio parte da `stacks/_template`:
+
+```bash
+STACK="<nome-stack>"
+test ! -e "stacks/${STACK}" || { echo "stack già esistente"; exit 1; }
+cp -r stacks/_template "stacks/${STACK}"
+```
+
+Modificare poi `stacks/${STACK}/compose.yml` seguendo
+`stacks/_template/README.md`. I vincoli di hardening (utente non-root,
+`no-new-privileges`, `cap_drop: ALL`, `read_only`, `tmpfs`, rete IPv6-only,
+immagine pinnata, healthcheck) non vanno rimossi.
+
+### 2.2 Controlli preliminari
+
+```bash
+STACK="<nome-stack>"
+COMPOSE="stacks/${STACK}/compose.yml"
+
+test -f "$COMPOSE"
+docker compose -f "$COMPOSE" config -q
+grep -nE 'docker\.sock|0\.0\.0\.0' "$COMPOSE"   # atteso: nessun output
+```
+
+Verificare che le porte interne non siano già in uso:
+
+```bash
+ss -6 -tulnp
+ss -4 -tulnp
+```
+
+Verificare che il file dei segreti esista e abbia i permessi corretti, senza
+stamparne il contenuto:
+
+```bash
+test -f "/etc/organic-server/secrets/${STACK}.env"
+stat -c '%a %U:%G %n' "/etc/organic-server/secrets/${STACK}.env"
+```
+
+Attesi `600` e proprietario dell'operatore. In assenza del file, il deploy
+può solo essere validato sintatticamente: non avviare il servizio.
+
+### 2.3 Backup e commit della configurazione
+
+Prima di applicare, copiare i file che verranno modificati e committare la
+configurazione validata (Tier 2):
+
+```bash
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p ".backups/${TS}/${STACK}"
+cp -a "$COMPOSE" ".backups/${TS}/${STACK}/"
+
+git add "$COMPOSE"
+git commit -m "chore(stacks): deploy ${STACK} configuration"
+```
+
+Se non ci sono modifiche da committare, `git commit` restituisce "nothing to
+commit": è un esito accettabile, non un errore.
+
+### 2.4 Applicazione dichiarativa
+
+```bash
+docker compose -f "$COMPOSE" pull
+docker compose -f "$COMPOSE" up -d --remove-orphans
+docker compose -f "$COMPOSE" ps
+```
+
+`up -d --remove-orphans` è idempotente: ricrea solo i container la cui
+configurazione o immagine è cambiata e rimuove i servizi eliminati dal file.
+Non usare `down` in questa fase: interromperebbe il servizio senza necessità.
+
+### 2.5 Verifica healthcheck
+
+```bash
+for c in $(docker compose -f "$COMPOSE" ps -q); do
+  docker inspect --format \
+    '{{.Name}} state={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+    "$c"
+done
+```
+
+Attesi `state=running` e `health=healthy`. Se lo stato è `starting`,
+attendere una sola volta 15–20 secondi e ripetere la lettura (massimo 2
+letture totali). Se lo stato è `unhealthy`, `exited` o `missing`, applicare
+la sezione 4 e registrare l'errore.
+
+Aggiornare `.ai/CONTEXT.md` con container, indirizzo IPv6, porte osservate e
+stato dell'healthcheck.
+
+**Retry:** massimo 2 tentativi per comando o servizio; poi stato `BLOCKED`
+nel task e segnalazione in `.ai/REPORT.md`.
+
+**Log:** comandi eseguiti, output di `ps`, stato degli healthcheck, hash del
+commit.
+
+## 3. Verifica esposizione solo IPv6
+
+Tutte le operazioni sono di sola lettura. Eseguire dopo ogni deploy e
+durante ogni audit.
+
+### 3.1 Socket IPv4
+
+```bash
+ss -4 -tulpn
+ss -4 -tulpn | grep -F 'docker-proxy'
+```
+
+Atteso: il secondo comando non produce output. Qualsiasi listener
+`docker-proxy`, `containerd` o processo applicativo Docker su IPv4 è
+un'anomalia. Un listener IPv4 di management (ad esempio `sshd`) è tollerato
+solo se previsto e va annotato, non rimosso dall'agente.
+
+Controllo equivalente lato Docker:
+
+```bash
+docker ps --format 'table {{.Names}}\t{{.Ports}}'
+docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '(^|[[:space:]])0\.0\.0\.0:'
+```
+
+Il secondo comando deve essere vuoto. Le pubblicazioni IPv6 compaiono come
+`[::]:<porta>->...` (o `:::<porta>->...` nelle versioni precedenti).
+
+### 3.2 Socket IPv6
+
+```bash
+ss -6 -tulpn
+ss -6 -tulpn | grep -E ':(<porta>)'
+```
+
+Atteso: le porte applicative pubblicate ascoltano su `[::]` o su un
+indirizzo IPv6 specifico, mai su `0.0.0.0`.
+
+### 3.3 Ispezione dei container e delle reti
+
+```bash
+COMPOSE="stacks/<nome-stack>/compose.yml"
+
+for c in $(docker compose -f "$COMPOSE" ps -q); do
+  docker inspect --format \
+    '{{.Name}} ports={{json .NetworkSettings.Ports}} networks={{json .NetworkSettings.Networks}}' \
+    "$c"
+done
+```
+
+Verificare che:
+
+- ogni `HostIp` in `NetworkSettings.Ports` sia `::` o un indirizzo IPv6;
+- nessun valore sia `0.0.0.0`;
+- ogni container abbia un `GlobalIPv6Address` coerente con `.ai/CONTEXT.md`
+  e nessun `IPAddress` IPv4 sulla rete applicativa.
+
+```bash
+docker network inspect edge-v6 \
+  --format 'EnableIPv6={{.EnableIPv6}} internal={{.Internal}} ipam={{json .IPAM.Config}}'
+docker network inspect internal-v6 \
+  --format 'EnableIPv6={{.EnableIPv6}} internal={{.Internal}} ipam={{json .IPAM.Config}}'
+```
+
+Attesi: `EnableIPv6=true`, `Internal=false` su `edge-v6`, `Internal=true` su
+`internal-v6`, e configurazioni IPAM senza subnet IPv4.
+
+### 3.4 Probe dall'interno del container
+
+```bash
+docker exec <container> getent hosts <hostname>
+docker exec <container> wget -q -O /dev/null 'http://[::1]:<porta>/'
+```
+
+Adattare il probe all'immagine: l'importante è che usi IPv6 e mai
+`127.0.0.1`.
+
+**Blocco:** non modificare `nftables`, `/etc/docker/daemon.json`, interfacce
+o `systemd-networkd` per "aggiustare" un'esposizione. Sono modifiche Tier 3.
+Fermarsi, applicare la sezione 4 se il deploy è recente, e aprire un task.
+
+**Log:** output dei due `ss`, mapping porte Docker, indirizzi IPv6 osservati
+e ogni anomalia.
+
+## 4. Rollback sicuro di uno stack
+
+Da usare quando un deploy o una modifica tracciata produce un peggioramento
+verificabile. Il rollback ripristina la configurazione e ricrea i container,
+ma **non tocca i volumi persistenti**.
+
+### 4.1 Fotografare lo stato corrente
+
+```bash
+STACK="<nome-stack>"
+COMPOSE="stacks/${STACK}/compose.yml"
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+
+git status --short
+docker compose -f "$COMPOSE" ps
+
+mkdir -p ".backups/${TS}/${STACK}"
+cp -a "$COMPOSE" ".backups/${TS}/${STACK}/"
+```
+
+### 4.2 Identificare il commit sano
+
+```bash
+git log --oneline -n 20 -- "$COMPOSE"
+git show <commit-sano>:"$COMPOSE" | head -n 20
+```
+
+Usare l'ultimo commit nel quale lo stack funzionava, tipicamente
+`<commit-guasto>^`. Non serve riscrivere la storia.
+
+### 4.3 Ripristinare il solo file dello stack
+
+```bash
+git checkout <commit-sano> -- "$COMPOSE"
+git diff -- "$COMPOSE"
+```
+
+`git checkout <commit> -- <path>` modifica solo quel file e lo mette in
+staging; non sposta il branch e non tocca altri stack.
+
+### 4.4 Validare e riapplicare
+
+```bash
+docker compose -f "$COMPOSE" config -q
+docker compose -f "$COMPOSE" up -d --remove-orphans
+docker compose -f "$COMPOSE" ps
+```
+
+`up -d --remove-orphans` ricrea i container con l'immagine e la
+configurazione ripristinate. I volumi con nome restano montati e intatti;
+i dati non vengono cancellati.
+
+### 4.5 Verificare e committare il ripristino
+
+Ripetere i controlli delle sezioni 2.5 e 3, poi:
+
+```bash
+git add "$COMPOSE"
+git commit -m "revert(stacks): rollback ${STACK} to <commit-sano>"
+```
+
+Registrare in `.ai/REPORT.md` commit annullato, motivo ed esito; aggiornare
+`.ai/CONTEXT.md`.
+
+### 4.6 Divieti
+
+Mai eseguire durante un rollback automatico:
+
+- `docker compose down -v` o qualunque opzione `--volumes`;
+- `docker volume rm`, `docker volume prune`, `docker system prune --volumes`;
+- `git reset --hard`, `git clean -fd`, `git push --force`;
+- cancellazione o spostamento di directory dati.
+
+Se il ripristino del file non è sufficiente (ad esempio un'immagine è stata
+eliminata dal registry), fermarsi, riportare lo stato `BLOCKED` e chiedere
+intervento all'operatore.
+
+**Log:** SHA ripristinato, comandi eseguiti, stato finale dei servizi e dei
+volumi (solo lettura: `docker volume ls`).
+
+## 5. Diagnostica IPv6 e container
 
 Tutte le operazioni sono di sola lettura.
 
@@ -68,6 +367,7 @@ Tutte le operazioni sono di sola lettura.
 2. Socket in ascolto e relativi binding:
    ```bash
    ss -tulnp
+   ss -6 -tulnp
    ```
 3. Reti Docker e indirizzi assegnati:
    ```bash
@@ -79,7 +379,7 @@ Tutte le operazioni sono di sola lettura.
    ```bash
    docker network inspect edge-v6 --format '{{json .EnableIPv6}} {{json .Options}}'
    docker network inspect internal-v6 --format '{{json .Internal}} {{json .IPAM.Config}}'
-   docker run --rm --network edge-v6 alpine:3 ping -6 -c 3 <IPV6_TARGET>
+   docker run --rm --network edge-v6 alpine:3.20.3 ping -6 -c 3 <IPV6_TARGET>
    ```
    Attesi: `EnableIPv6=true`, `com.docker.network.bridge.enable_ip_masquerade=false`, `Internal=false` su `edge-v6` e `Internal=true` su `internal-v6`, subnet coerenti con `.ai/CONTEXT.md` e risposta ICMPv6 dal target. Il template versionato del daemon è `config/docker/daemon.json.example`; la sua applicazione a `/etc/docker/daemon.json` è Tier 3 e spetta all'operatore.
 5. Risoluzione e raggiungibilità dall'interno del container:
@@ -93,33 +393,3 @@ Tutte le operazioni sono di sola lettura.
 **Blocco:** qualsiasi intervento su `nftables`, interfacce o `systemd-networkd` è Tier 3 e richiede approvazione umana.
 
 **Log:** comando, output rilevante e diagnosi; aprire un task in `.ai/QUEUE.md` se serve una modifica.
-
-## 4. Procedura di Rollback via Git
-
-Da usare quando un deploy o una modifica di configurazione tracciata produce un peggioramento verificabile.
-
-1. Identificare il commit da annullare:
-   ```bash
-   git log --oneline -n 20
-   git status
-   ```
-2. Annullare in modo non distruttivo, preferendo `git revert`:
-   ```bash
-   git revert --no-edit <sha>
-   ```
-   Per ripristinare un singolo file da un commit noto:
-   ```bash
-   git checkout <sha> -- <path>
-   ```
-3. Ripristinare eventuali file non tracciati da `.backups/<timestamp>/`.
-4. Riapplicare lo stack interessato e verificarne lo stato:
-   ```bash
-   docker compose -f <file-compose> up -d
-   docker compose -f <file-compose> ps
-   ```
-5. Confermare il ripristino con i controlli della sezione 3.
-6. Registrare in `.ai/REPORT.md` il commit annullato, il motivo e l'esito; aggiornare `.ai/CONTEXT.md`.
-
-**Divieto:** non usare `git reset --hard`, `git clean -fd` o `git push --force` durante un rollback automatico.
-
-**Log:** SHA annullato, comandi eseguiti, stato finale dei servizi.
