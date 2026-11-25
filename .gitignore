@@ -1,0 +1,24 @@
+# ------------------------------------------------------------------
+# Segreti e variabili d'ambiente reali
+# ------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# Chiavi private, certificati e token
+*.pem
+*.key
+*.age
+*.p12
+*.pfx
+secrets/
+
+# ------------------------------------------------------------------
+# Volumi dati locali, backup e file temporanei
+# ------------------------------------------------------------------
+data/
+backups/
+.backups/
+*.bak
+*.tmp
+.DS_Store
